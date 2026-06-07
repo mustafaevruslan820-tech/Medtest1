@@ -42,14 +42,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.example.medtest1.network.BackendApi
 import com.example.medtest1.network.DoctorMessage
 import com.example.medtest1.support.SupportChatGradient
+import com.example.medtest1.support.SupportChatText
 import com.example.medtest1.support.SupportIncomingBubble
 import com.example.medtest1.support.SupportOutgoingBubble
-import com.example.medtest1.support.SupportChatText
 import com.example.medtest1.ui.theme.LocalMedAppColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -179,6 +178,8 @@ private fun DoctorChatMessageBubble(
     message: DoctorMessage,
     viewerIsDoctor: Boolean
 ) {
+    val app = LocalMedAppColors.current
+    val scheme = MaterialTheme.colorScheme
     val isMine = if (viewerIsDoctor) message.sender == "doctor" else message.sender == "patient"
     val importantKind = classifyImportantDoctorMessage(message.text, !viewerIsDoctor)
     val bubbleColor = if (isMine) SupportOutgoingBubble else SupportIncomingBubble
@@ -188,6 +189,7 @@ private fun DoctorChatMessageBubble(
         ImportantDoctorMessageKind.Plan -> Color(0xFF4DD0E1)
         null -> Color.Transparent
     }
+    val formatted = remember(message.text) { parseDoctorChatMessage(message.text) }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -217,8 +219,7 @@ private fun DoctorChatMessageBubble(
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = accent,
-                    fontWeight = FontWeight.Bold,
-                    textDecoration = TextDecoration.Underline
+                    fontWeight = FontWeight.Bold
                 )
             }
         }
@@ -231,13 +232,51 @@ private fun DoctorChatMessageBubble(
                 Modifier
             }
         ) {
-            Text(
-                text = message.text,
-                color = SupportChatText,
-                fontWeight = if (importantKind != null) FontWeight.SemiBold else FontWeight.Normal,
-                textDecoration = if (importantKind != null) TextDecoration.Underline else TextDecoration.None,
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
-            )
+            Column(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                formatted.prescriptionText?.let { rx ->
+                    Text(
+                        text = rx,
+                        color = SupportChatText,
+                        fontWeight = if (importantKind != null) FontWeight.SemiBold else FontWeight.Normal
+                    )
+                }
+                formatted.planSummary?.let { plan ->
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = scheme.surface.copy(alpha = 0.35f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                "План лечения",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = accent.takeIf { it != Color.Transparent } ?: scheme.primary,
+                                fontWeight = FontWeight.Bold
+                            )
+                            plan.lines().forEach { line ->
+                                Text(
+                                    text = line,
+                                    color = SupportChatText,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            }
+                        }
+                    }
+                }
+                if (formatted.prescriptionText == null && formatted.planSummary == null) {
+                    Text(
+                        text = formatted.plainText.ifBlank { message.text },
+                        color = SupportChatText,
+                        fontWeight = if (importantKind != null) FontWeight.SemiBold else FontWeight.Normal
+                    )
+                }
+            }
         }
         Text(
             text = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.createdAt)),

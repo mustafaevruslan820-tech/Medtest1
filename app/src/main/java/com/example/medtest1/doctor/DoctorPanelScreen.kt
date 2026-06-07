@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -40,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import com.example.medtest1.network.BackendApi
 import com.example.medtest1.network.DoctorAssignment
 import com.example.medtest1.network.DoctorPrescription
+import com.example.medtest1.network.DoctorProfile
 import com.example.medtest1.network.DoctorShiftInfo
 import com.example.medtest1.network.TreatmentReportSummary
 import com.example.medtest1.reports.assignmentsToShiftLines
@@ -95,6 +99,7 @@ fun DoctorPanelScreen(
     onPatientMilestoneSeen: (Long, Int) -> Unit,
     onEditProfile: () -> Unit,
     onOpenChat: (assignmentId: Long, patientName: String) -> Unit,
+    onOpenPeerChat: (doctorId: Long, doctorName: String, specialty: String) -> Unit,
     onBack: () -> Unit
 ) {
     val app = LocalMedAppColors.current
@@ -104,6 +109,8 @@ fun DoctorPanelScreen(
     var shiftLoading by remember { mutableStateOf(true) }
     var currentShift by remember { mutableStateOf<DoctorShiftInfo?>(null) }
     var assignments by remember { mutableStateOf<List<DoctorAssignment>>(emptyList()) }
+    var completedAssignments by remember { mutableStateOf<List<DoctorAssignment>>(emptyList()) }
+    var colleagues by remember { mutableStateOf<List<DoctorProfile>>(emptyList()) }
     var rejections by remember { mutableStateOf<List<DoctorAssignment>>(emptyList()) }
     var listTab by remember { mutableIntStateOf(0) }
     var selected by remember { mutableStateOf<DoctorAssignment?>(null) }
@@ -114,7 +121,6 @@ fun DoctorPanelScreen(
     val assignmentMilestones = remember { mutableStateMapOf<Long, List<CareMilestone>>() }
     var sendingPrescription by remember { mutableStateOf(false) }
     var conclusion by remember { mutableStateOf("") }
-    var continuePlan by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
     var pendingShiftExport by remember { mutableStateOf<DoctorShiftInfo?>(null) }
 
@@ -152,6 +158,9 @@ fun DoctorPanelScreen(
             currentShift = BackendApi.getMyShiftDetail(tokenProvider())
             shiftLoading = false
             assignments = BackendApi.getDoctorAssignments(tokenProvider())
+            completedAssignments = BackendApi.getDoctorCompletedAssignments(tokenProvider())
+            colleagues = BackendApi.listOnDutyDoctors(tokenProvider())
+                .filter { it.username != doctorDisplayName }
             rejections = BackendApi.getDoctorRejections(tokenProvider())
             assignments.forEach { a ->
                 val detail = BackendApi.getAssignmentDetail(tokenProvider(), a.id)
@@ -199,7 +208,7 @@ fun DoctorPanelScreen(
         val assignment = selected!!
         MedSubScreenLayout(
             title = assignment.patientUsername,
-            subtitle = "Пациент",
+            subtitle = if (assignment.status == "completed") "Лечение завершено" else "Пациент на лечении",
             onBack = { selected = null },
             modifier = modifier
         ) {
@@ -253,30 +262,32 @@ fun DoctorPanelScreen(
                 modifier = Modifier.fillMaxWidth()
             ) { Text("Чат с пациентом") }
 
-            MedSectionLabel("Назначить лечение")
-            DoctorPrescriptionPlanner(
-                sending = sendingPrescription,
-                onPlanReady = { plan ->
-                    sendingPrescription = true
-                    scope.launch {
-                        val summary = formatPrescriptionSummary(plan)
-                        val json = structuredPlanToJson(plan)
-                        val ok = BackendApi.sendPrescription(
-                            token = tokenProvider(),
-                            assignmentId = assignment.id,
-                            prescriptionText = summary,
-                            treatmentPlanText = json
-                        )
-                        sendingPrescription = false
-                        status = if (ok) {
-                            "План лечения отправлен пациенту на подтверждение."
-                        } else {
-                            "Не удалось отправить план."
+            if (assignment.status != "completed") {
+                MedSectionLabel("Назначить лечение")
+                DoctorPrescriptionPlanner(
+                    sending = sendingPrescription,
+                    onPlanReady = { plan ->
+                        sendingPrescription = true
+                        scope.launch {
+                            val summary = formatPrescriptionSummary(plan)
+                            val json = structuredPlanToJson(plan)
+                            val ok = BackendApi.sendPrescription(
+                                token = tokenProvider(),
+                                assignmentId = assignment.id,
+                                prescriptionText = summary,
+                                treatmentPlanText = json
+                            )
+                            sendingPrescription = false
+                            status = if (ok) {
+                                "План лечения отправлен пациенту на подтверждение."
+                            } else {
+                                "Не удалось отправить план."
+                            }
+                            if (ok) loadDetail(assignment)
                         }
-                        if (ok) loadDetail(assignment)
                     }
-                }
-            )
+                )
+            }
 
             if (prescriptions.isNotEmpty()) {
                 MedSectionLabel("Ранее выданные планы")
@@ -308,50 +319,34 @@ fun DoctorPanelScreen(
                         modifier = Modifier.fillMaxWidth(),
                         minLines = 2
                     )
-                    OutlinedTextField(
-                        value = continuePlan,
-                        onValueChange = { continuePlan = it },
-                        label = { Text("Новый план (если продолжить)") },
-                        modifier = Modifier.fillMaxWidth(),
-                        minLines = 2
+                    Text(
+                        "После завершения пациент переместится во вкладку «Завершённые».",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = app.onHeroMuted
                     )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = {
-                                scope.launch {
-                                    val ok = BackendApi.concludeReport(
-                                        token = tokenProvider(),
-                                        assignmentId = assignment.id,
-                                        reportId = pendingReport.id,
-                                        action = "complete",
-                                        conclusion = conclusion.ifBlank { "Лечение завершено." },
-                                        newTreatmentPlanText = null
-                                    )
-                                    status = if (ok) "Лечение отмечено завершённым." else "Ошибка."
-                                    loadDetail(assignment)
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                val ok = BackendApi.concludeReport(
+                                    token = tokenProvider(),
+                                    assignmentId = assignment.id,
+                                    reportId = pendingReport.id,
+                                    action = "complete",
+                                    conclusion = conclusion.ifBlank { "Лечение завершено." },
+                                    newTreatmentPlanText = null
+                                )
+                                status = if (ok) {
+                                    "Лечение завершено. Пациент перенесён в «Завершённые»."
+                                } else {
+                                    "Не удалось завершить лечение."
                                 }
-                            },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                        ) { Text("Завершить") }
-                        Button(
-                            onClick = {
-                                scope.launch {
-                                    val ok = BackendApi.concludeReport(
-                                        token = tokenProvider(),
-                                        assignmentId = assignment.id,
-                                        reportId = pendingReport.id,
-                                        action = "continue",
-                                        conclusion = conclusion.ifBlank { "Продолжить лечение." },
-                                        newTreatmentPlanText = continuePlan
-                                    )
-                                    status = if (ok) "Назначено продолжение лечения." else "Ошибка."
-                                    loadDetail(assignment)
-                                }
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) { Text("Продолжить") }
-                    }
+                                refresh()
+                                selected = null
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    ) { Text("Завершить лечение") }
                 }
             }
             status?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
@@ -444,75 +439,161 @@ fun DoctorPanelScreen(
         }
 
         TabRow(selectedTabIndex = listTab) {
-            Tab(
-                selected = listTab == 0,
-                onClick = { listTab = 0 },
-                text = { Text("Пациенты (${assignments.size})") }
-            )
-            Tab(
-                selected = listTab == 1,
-                onClick = { listTab = 1 },
-                text = { Text("Отказы (${rejections.size})") }
-            )
+            Tab(selected = listTab == 0, onClick = { listTab = 0 }, text = { Text("Пациенты (${assignments.size})") })
+            Tab(selected = listTab == 1, onClick = { listTab = 1 }, text = { Text("Завершённые (${completedAssignments.size})") })
+            Tab(selected = listTab == 2, onClick = { listTab = 2 }, text = { Text("Коллеги (${colleagues.size})") })
+            Tab(selected = listTab == 3, onClick = { listTab = 3 }, text = { Text("Отказы (${rejections.size})") })
         }
 
-        if (listTab == 0) {
-            MedSectionLabel("Мои пациенты")
-            if (assignments.isEmpty()) {
-                Text("Пока нет назначенных пациентов.", modifier = Modifier.padding(8.dp))
-            } else {
-                groupPatientsByShift(assignments).forEach { group ->
-                    MedSectionLabel(group.title)
-                    group.assignments.forEach { a ->
-                        val milestones = assignmentMilestones[a.id].orEmpty()
-                        val latest = latestDoneMilestoneIndex(milestones)
-                        val seen = patientMilestoneSeenProvider(a.id)
-                        AnimatedVisibility(
-                            visible = true,
-                            enter = fadeIn(tween(300)) + slideInVertically(tween(300)) { it / 10 }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            when (listTab) {
+                0 -> {
+                    MedSectionLabel("Активные пациенты")
+                    if (assignments.isEmpty()) {
+                        Text("Пока нет назначенных пациентов. Начните смену, чтобы вас видели.", modifier = Modifier.padding(8.dp))
+                    } else {
+                        groupPatientsByShift(assignments).forEach { group ->
+                            MedSectionLabel(group.title)
+                            group.assignments.forEach { a ->
+                                PatientListCard(
+                                    assignment = a,
+                                    milestones = assignmentMilestones[a.id].orEmpty(),
+                                    highlightIndex = latestDoneMilestoneIndex(assignmentMilestones[a.id].orEmpty()),
+                                    seenIndex = patientMilestoneSeenProvider(a.id),
+                                    statusLabel = "На лечении",
+                                    onClick = { loadDetail(a) }
+                                )
+                            }
+                        }
+                    }
+                }
+                1 -> {
+                    MedSectionLabel("Завершённые пациенты")
+                    if (completedAssignments.isEmpty()) {
+                        Text("Завершённых курсов пока нет.", modifier = Modifier.padding(8.dp))
+                    } else {
+                        completedAssignments.forEach { a ->
+                            PatientListCard(
+                                assignment = a,
+                                milestones = emptyList(),
+                                highlightIndex = -1,
+                                seenIndex = -1,
+                                statusLabel = "Лечение завершено",
+                                onClick = { loadDetail(a) }
+                            )
+                        }
+                    }
+                }
+                2 -> {
+                    MedSectionLabel("Врачи на смене")
+                    if (!onDuty) {
+                        Text("Начните смену, чтобы общаться с коллегами.", modifier = Modifier.padding(8.dp))
+                    } else if (colleagues.isEmpty()) {
+                        Text("Сейчас на смене только вы.", modifier = Modifier.padding(8.dp))
+                    } else {
+                        Text(
+                            "Нажмите на коллегу, чтобы открыть чат.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = app.onHeroMuted,
+                            modifier = Modifier.padding(horizontal = 8.dp)
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            MedSurfaceCard(
-                                modifier = Modifier.clickable { loadDetail(a) }
-                            ) {
-                                Text(a.patientUsername, fontWeight = FontWeight.SemiBold)
-                                Text("Назначен: ${formatTs(a.assignedAt)}", style = MaterialTheme.typography.bodySmall)
-                                if (milestones.isNotEmpty()) {
-                                    CareMilestoneRow(
-                                        milestones = milestones,
-                                        highlightNewFromIndex = if (latest > seen) latest else -1,
-                                        modifier = Modifier.padding(top = 6.dp)
-                                    )
-                                }
+                            colleagues.forEach { doc ->
+                                DoctorSelectionCard(
+                                    doctor = doc,
+                                    index = 0,
+                                    onClick = {
+                                        onOpenPeerChat(
+                                            doc.userId,
+                                            doc.fullName.ifBlank { doc.username },
+                                            doc.specialty
+                                        )
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+                else -> {
+                    MedSectionLabel("Пациенты, отказавшиеся от лечения")
+                    if (rejections.isEmpty()) {
+                        Text("Отказов пока нет.", modifier = Modifier.padding(8.dp))
+                    } else {
+                        rejections.forEach { r ->
+                            MedSurfaceCard {
+                                Text(r.patientUsername, fontWeight = FontWeight.SemiBold)
                                 Text(
-                                    "Нажмите для просмотра профиля и лечения",
-                                    style = MaterialTheme.typography.labelSmall
+                                    "Отказ: ${formatTs(r.rejectedAt ?: r.assignedAt)}",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Text(
+                                    "Причина: ${r.rejectionReason.orEmpty().ifBlank { "Не указана" }}",
+                                    style = MaterialTheme.typography.bodyMedium
                                 )
                             }
                         }
                     }
                 }
             }
-        } else {
-            MedSectionLabel("Пациенты, отказавшиеся от лечения")
-            if (rejections.isEmpty()) {
-                Text("Отказов пока нет.", modifier = Modifier.padding(8.dp))
-            } else {
-                rejections.forEach { r ->
-                    MedSurfaceCard {
-                        Text(r.patientUsername, fontWeight = FontWeight.SemiBold)
-                        Text(
-                            "Отказ: ${formatTs(r.rejectedAt ?: r.assignedAt)}",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        Text(
-                            "Причина: ${r.rejectionReason.orEmpty().ifBlank { "Не указана" }}",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                }
-            }
         }
         status?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+    }
+}
+
+@Composable
+private fun PatientListCard(
+    assignment: DoctorAssignment,
+    milestones: List<CareMilestone>,
+    highlightIndex: Int,
+    seenIndex: Int,
+    statusLabel: String,
+    onClick: () -> Unit
+) {
+    val app = LocalMedAppColors.current
+    val scheme = MaterialTheme.colorScheme
+    AnimatedVisibility(
+        visible = true,
+        enter = fadeIn(tween(300)) + slideInVertically(tween(300)) { it / 10 }
+    ) {
+        MedSurfaceCard(modifier = Modifier.clickable(onClick = onClick)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(assignment.patientUsername, fontWeight = FontWeight.Bold)
+                Text(
+                    statusLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = scheme.primary,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            Text("Назначен: ${formatTs(assignment.assignedAt)}", style = MaterialTheme.typography.bodySmall, color = app.onHeroMuted)
+            if (milestones.isNotEmpty()) {
+                CareMilestoneRow(
+                    milestones = milestones,
+                    highlightNewFromIndex = if (highlightIndex > seenIndex) highlightIndex else -1,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            }
+            Text(
+                "Открыть карточку пациента →",
+                style = MaterialTheme.typography.labelSmall,
+                color = app.onHeroMuted,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
     }
 }
 

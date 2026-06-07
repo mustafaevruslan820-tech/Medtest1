@@ -230,6 +230,7 @@ import com.example.medtest1.notifications.SupportAdminNotifier
 import com.example.medtest1.doctor.AdminPanelScreen
 import com.example.medtest1.doctor.DoctorPanelScreen
 import com.example.medtest1.doctor.DoctorPatientChatScreen
+import com.example.medtest1.doctor.DoctorPeerChatScreen
 import com.example.medtest1.doctor.DoctorProfileFormScreen
 import com.example.medtest1.doctor.isProfileReady
 import com.example.medtest1.doctor.DoctorTreatmentSection
@@ -669,6 +670,9 @@ private fun MedApp(
     var doctorChatAssignmentId by remember { mutableStateOf(0L) }
     var doctorChatTitle by remember { mutableStateOf("") }
     var doctorChatAsDoctor by remember { mutableStateOf(false) }
+    var peerChatDoctorId by remember { mutableStateOf(0L) }
+    var peerChatTitle by remember { mutableStateOf("") }
+    var peerChatSpecialty by remember { mutableStateOf("") }
     val activity = context as? Activity
 
     val alarmManager = context.getSystemService(AlarmManager::class.java)
@@ -969,11 +973,7 @@ private fun MedApp(
                             val lastConclusion = sessionPrefs.getLong("care_last_conclusion_$assignmentId", 0L)
                             val signedAt = concluded?.doctorSignedAt ?: 0L
                             if (!inChat && signedAt > lastConclusion) {
-                                val title = if (concluded?.status == "completed") {
-                                    "Лечение завершено"
-                                } else {
-                                    "Продолжение лечения"
-                                }
+                                val title = "Лечение завершено"
                                 DoctorNotifier.show(
                                     context,
                                     title,
@@ -1196,6 +1196,7 @@ private fun MedApp(
             Screen.AdminPanel -> currentScreen = Screen.Home
             Screen.DoctorPanel -> activity?.finish()
             Screen.DoctorProfileForm -> currentScreen = Screen.DoctorPanel
+            Screen.DoctorPeerChat -> currentScreen = Screen.DoctorPanel
             Screen.DoctorPatientChat -> {
                 currentScreen = if (doctorChatAsDoctor) Screen.DoctorPanel else Screen.Treatment
             }
@@ -1797,6 +1798,12 @@ private fun MedApp(
                     doctorChatAsDoctor = true
                     currentScreen = Screen.DoctorPatientChat
                 },
+                onOpenPeerChat = { doctorId, doctorName, specialty ->
+                    peerChatDoctorId = doctorId
+                    peerChatTitle = doctorName
+                    peerChatSpecialty = specialty
+                    currentScreen = Screen.DoctorPeerChat
+                },
                 onBack = {
                     sessionPrefs.edit {
                         remove("active_user")
@@ -1828,6 +1835,15 @@ private fun MedApp(
                 onBack = {
                     currentScreen = if (doctorChatAsDoctor) Screen.DoctorPanel else Screen.Treatment
                 }
+            )
+
+            Screen.DoctorPeerChat -> DoctorPeerChatScreen(
+                modifier = Modifier.fillMaxSize(),
+                tokenProvider = { sessionPrefs.getString("auth_token", "").orEmpty() },
+                peerDoctorId = peerChatDoctorId,
+                peerTitle = peerChatTitle,
+                peerSpecialty = peerChatSpecialty,
+                onBack = { currentScreen = Screen.DoctorPanel }
             )
 
             Screen.Treatment -> TreatmentScreen(
@@ -5617,7 +5633,10 @@ private fun WellbeingDiaryScreen(
     val today = remember(diaryNow) {
         java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).format(java.util.Date(diaryNow))
     }
-    val diaryPlans = remember(plans) { plansForActiveCourseOnly(plans) }
+    val diaryPlans = remember(plans) {
+        val withCourse = plans.filter { it.courseId > 0L }
+        if (withCourse.isEmpty()) plans else withCourse
+    }
     val completedDays = remember(diaryPlans, diaryNow) {
         val grouped = diaryPlans.groupBy { it.startDate }
         grouped.keys
@@ -7218,6 +7237,7 @@ private enum class Screen {
     DoctorPanel,
     DoctorProfileForm,
     DoctorPatientChat,
+    DoctorPeerChat,
     Treatment,
     WellbeingDiary
 }

@@ -123,6 +123,53 @@ fun formatStructuredPlanForPatientCard(text: String): String {
     return formatPrescriptionSummary(plan)
 }
 
+data class DoctorChatFormattedMessage(
+    val prescriptionText: String? = null,
+    val planSummary: String? = null,
+    val plainText: String
+)
+
+fun parseDoctorChatMessage(raw: String): DoctorChatFormattedMessage {
+    val text = raw.trim()
+    if (text.isBlank()) return DoctorChatFormattedMessage(plainText = "")
+
+    val planMarkers = listOf("\n\nПлан лечения:\n", "\nПлан лечения:\n", "\n\nНовый план лечения:\n", "\nНовый план лечения:\n")
+    var planPart: String? = null
+    var beforePlan = text
+    for (marker in planMarkers) {
+        val idx = text.indexOf(marker, ignoreCase = true)
+        if (idx >= 0) {
+            beforePlan = text.substring(0, idx).trim()
+            planPart = text.substring(idx + marker.length).trim()
+            break
+        }
+    }
+
+    var prescriptionText: String? = null
+    val rxPrefixes = listOf("Рецепт:", "Рецепт：")
+    val beforeLower = beforePlan.lowercase(Locale.getDefault())
+    for (prefix in rxPrefixes) {
+        if (beforeLower.startsWith(prefix.lowercase(Locale.getDefault()))) {
+            prescriptionText = beforePlan.substring(prefix.length).trim()
+            break
+        }
+    }
+
+    val planSummary = planPart?.let { formatStructuredPlanForPatientCard(it) }?.takeIf { it.isNotBlank() }
+    val plain = when {
+        prescriptionText == null && planSummary == null -> text
+        prescriptionText != null && planSummary == null -> prescriptionText
+        prescriptionText == null && planSummary != null -> planSummary
+        else -> ""
+    }
+
+    return DoctorChatFormattedMessage(
+        prescriptionText = prescriptionText,
+        planSummary = planSummary,
+        plainText = plain
+    )
+}
+
 fun countPlanDays(text: String): Int =
     parseStructuredPlanJson(text)?.days?.size ?: 0
 

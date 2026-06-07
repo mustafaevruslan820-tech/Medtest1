@@ -156,10 +156,8 @@ export async function sendPatientReportConclusionPush({ token, status, assignmen
     await admin.messaging().send({
       token,
       notification: {
-        title: completed ? 'Лечение завершено' : 'Продолжение лечения',
-        body: completed
-          ? 'Врач подписал завершение лечения'
-          : 'Врач предложил продолжить лечение с новым планом',
+        title: 'Лечение завершено',
+        body: 'Врач подписал завершение лечения',
       },
       data: {
         type: 'report_conclusion',

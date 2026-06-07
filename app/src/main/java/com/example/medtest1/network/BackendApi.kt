@@ -66,6 +66,15 @@ data class DoctorMessage(
     val createdAt: Long
 )
 
+data class DoctorPeerMessage(
+    val id: Long,
+    val senderUserId: Long,
+    val recipientUserId: Long,
+    val text: String,
+    val createdAt: Long,
+    val senderIsMe: Boolean
+)
+
 data class DoctorPrescription(
     val id: Long,
     val prescriptionText: String,
@@ -884,6 +893,61 @@ object BackendApi {
             }
         }
     }
+
+    suspend fun getDoctorCompletedAssignments(token: String): List<DoctorAssignment> = withContext(Dispatchers.IO) {
+        val (code, text) = rawGet(
+            "$baseUrl/api/doctors/me/assignments/completed",
+            bearerToken = token,
+            adminKey = null
+        )
+        if (code !in 200..299 || text.isNullOrBlank()) return@withContext emptyList()
+        val arr = runCatching { JSONObject(text).optJSONArray("assignments") }.getOrNull()
+            ?: return@withContext emptyList()
+        buildList {
+            for (i in 0 until arr.length()) {
+                arr.optJSONObject(i)?.let { add(parseAssignment(it)) }
+            }
+        }
+    }
+
+    suspend fun getDoctorPeerMessages(token: String, otherDoctorId: Long): List<DoctorPeerMessage> =
+        withContext(Dispatchers.IO) {
+            val (code, text) = rawGet(
+                "$baseUrl/api/doctors/peer/$otherDoctorId/messages",
+                bearerToken = token,
+                adminKey = null
+            )
+            if (code !in 200..299 || text.isNullOrBlank()) return@withContext emptyList()
+            val arr = runCatching { JSONObject(text).optJSONArray("messages") }.getOrNull()
+                ?: return@withContext emptyList()
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val m = arr.optJSONObject(i) ?: continue
+                    add(
+                        DoctorPeerMessage(
+                            id = m.optLong("id"),
+                            senderUserId = m.optLong("senderUserId"),
+                            recipientUserId = m.optLong("recipientUserId"),
+                            text = m.optString("text"),
+                            createdAt = m.optLong("createdAt"),
+                            senderIsMe = m.optBoolean("senderIsMe", false)
+                        )
+                    )
+                }
+            }
+        }
+
+    suspend fun sendDoctorPeerMessage(token: String, otherDoctorId: Long, text: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val body = JSONObject().put("text", text.trim())
+            val (code, _) = rawPost(
+                "$baseUrl/api/doctors/peer/$otherDoctorId/messages",
+                body,
+                token,
+                null
+            )
+            code in 200..299
+        }
 
     suspend fun getAssignmentDetail(token: String, assignmentId: Long): AssignmentDetail =
         withContext(Dispatchers.IO) {

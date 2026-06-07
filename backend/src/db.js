@@ -206,5 +206,18 @@ function migrate(db) {
 
     CREATE INDEX IF NOT EXISTS idx_care_events_assignment
       ON care_events(assignment_id, event_type, created_at);
+
+    CREATE TABLE IF NOT EXISTS doctor_peer_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sender_user_id INTEGER NOT NULL,
+      recipient_user_id INTEGER NOT NULL,
+      text TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY(sender_user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY(recipient_user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_doctor_peer_messages_pair
+      ON doctor_peer_messages(sender_user_id, recipient_user_id, created_at);
   `);
 }

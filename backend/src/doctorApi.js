@@ -529,7 +529,25 @@ export function registerDoctorRoutes(app, {
          FROM doctor_assignments a
          JOIN users du ON du.id = a.doctor_user_id
          JOIN users pu ON pu.id = a.patient_user_id
-         WHERE a.doctor_user_id = ? AND a.status IN ('active', 'continued')
+         WHERE a.doctor_user_id = ? AND a.status = 'active'
+         ORDER BY a.assigned_at DESC`
+      )
+      .all(doctorId)
+      .map(mapAssignmentRow);
+    res.json({ ok: true, assignments: rows });
+  });
+
+  app.get('/api/doctors/me/assignments/completed', requireAuth, requireRole('doctor'), (req, res) => {
+    const doctorId = Number(req.user.sub);
+    const rows = db
+      .prepare(
+        `SELECT a.*, du.username AS doctor_username, pu.username AS patient_username,
+                dp.specialty AS doctor_specialty
+         FROM doctor_assignments a
+         JOIN users du ON du.id = a.doctor_user_id
+         JOIN users pu ON pu.id = a.patient_user_id
+         LEFT JOIN doctor_profiles dp ON dp.user_id = a.doctor_user_id
+         WHERE a.doctor_user_id = ? AND a.status = 'completed'
          ORDER BY a.assigned_at DESC`
       )
       .all(doctorId)
@@ -906,9 +924,9 @@ export function registerDoctorRoutes(app, {
     const assignmentId = Number(req.params.assignmentId);
     const reportId = Number(req.params.reportId);
     const doctorId = Number(req.user.sub);
-    const { action, conclusion, newTreatmentPlanText } = req.body ?? {};
+    const { action, conclusion } = req.body ?? {};
     const act = String(action ?? '').trim();
-    if (!['complete', 'continue'].includes(act)) {
+    if (act !== 'complete') {
       return res.status(400).json({ ok: false, error: 'invalid_action' });
     }
 
@@ -924,9 +942,8 @@ export function registerDoctorRoutes(app, {
     if (!row) return res.status(404).json({ ok: false, error: 'not_found' });
 
     const ts = nowMs();
-    const status = act === 'complete' ? 'completed' : 'continued';
-    const conclusionText = String(conclusion ?? '').trim() ||
-      (act === 'complete' ? 'Лечение завершено.' : 'Продолжить лечение с новым планом.');
+    const status = 'completed';
+    const conclusionText = String(conclusion ?? '').trim() || 'Лечение завершено.';
 
     db.prepare(
       `UPDATE treatment_reports
@@ -934,30 +951,7 @@ export function registerDoctorRoutes(app, {
        WHERE id = ?`
     ).run(status, conclusionText, ts, reportId);
 
-    if (act === 'complete') {
-      db.prepare(`UPDATE doctor_assignments SET status = 'completed' WHERE id = ?`).run(assignmentId);
-    } else {
-      db.prepare(`UPDATE doctor_assignments SET status = 'continued' WHERE id = ?`).run(assignmentId);
-      const planText = String(newTreatmentPlanText ?? '').trim();
-      if (planText) {
-        const rxInfo = db.prepare(
-          `INSERT INTO doctor_prescriptions
-            (assignment_id, prescription_text, treatment_plan_text, created_at, patient_status)
-           VALUES (?, ?, ?, ?, 'pending')`
-        ).run(assignmentId, 'Продолжение лечения', planText, ts);
-        const newRxId = Number(rxInfo.lastInsertRowid);
-        insertCareEvent(assignmentId, 'prescription_sent', { prescriptionId: newRxId });
-        db.prepare(
-          `INSERT INTO doctor_messages (assignment_id, sender, text, created_at) VALUES (?, 'doctor', ?, ?)`
-        ).run(assignmentId, `Новый план лечения:\n${planText}`, ts);
-        if (row.patient_token) {
-          void sendPatientPrescriptionPush({
-            token: row.patient_token,
-            assignmentId,
-          });
-        }
-      }
-    }
+    db.prepare(`UPDATE doctor_assignments SET status = 'completed' WHERE id = ?`).run(assignmentId);
 
     if (row.patient_token) {
       void sendPatientReportConclusionPush({
@@ -968,6 +962,95 @@ export function registerDoctorRoutes(app, {
     }
 
     res.json({ ok: true, status, conclusion: conclusionText, signedAt: ts });
+  });
+
+  app.get('/api/doctors/peer/:otherDoctorId/messages', requireAuth, requireRole('doctor'), (req, res) => {
+    const me = Number(req.user.sub);
+    const other = Number(req.params.otherDoctorId);
+    if (!other || other === me) {
+      return res.status(400).json({ ok: false, error: 'invalid_peer' });
+    }
+    const peer = db.prepare(`SELECT id FROM users WHERE id = ? AND role = 'doctor' LIMIT 1`).get(other);
+    if (!peer) return res.status(404).json({ ok: false, error: 'not_found' });
+
+    const rows = db
+      .prepare(
+        `SELECT id, sender_user_id, recipient_user_id, text, created_at
+         FROM doctor_peer_messages
+         WHERE (sender_user_id = ? AND recipient_user_id = ?)
+            OR (sender_user_id = ? AND recipient_user_id = ?)
+         ORDER BY created_at ASC, id ASC`
+      )
+      .all(me, other, other, me)
+      .map((m) => ({
+        id: Number(m.id),
+        senderUserId: Number(m.sender_user_id),
+        recipientUserId: Number(m.recipient_user_id),
+        text: String(m.text),
+        createdAt: Number(m.created_at),
+        senderIsMe: Number(m.sender_user_id) === me,
+      }));
+    res.json({ ok: true, messages: rows });
+  });
+
+  app.post('/api/doctors/peer/:otherDoctorId/messages', requireAuth, requireRole('doctor'), (req, res) => {
+    const me = Number(req.user.sub);
+    const other = Number(req.params.otherDoctorId);
+    const text = String(req.body?.text ?? '').trim();
+    if (!other || other === me) {
+      return res.status(400).json({ ok: false, error: 'invalid_peer' });
+    }
+    if (!text || text.length > 2000) {
+      return res.status(400).json({ ok: false, error: 'invalid_text' });
+    }
+    const peer = db
+      .prepare(
+        `SELECT u.id, u.fcm_token, p.full_name
+         FROM users u
+         LEFT JOIN doctor_profiles p ON p.user_id = u.id
+         WHERE u.id = ? AND u.role = 'doctor' LIMIT 1`
+      )
+      .get(other);
+    if (!peer) return res.status(404).json({ ok: false, error: 'not_found' });
+
+    const ts = nowMs();
+    const info = db
+      .prepare(
+        `INSERT INTO doctor_peer_messages (sender_user_id, recipient_user_id, text, created_at)
+         VALUES (?, ?, ?, ?)`
+      )
+      .run(me, other, text, ts);
+
+    const senderRow = db
+      .prepare(
+        `SELECT u.username, p.full_name
+         FROM users u
+         LEFT JOIN doctor_profiles p ON p.user_id = u.id
+         WHERE u.id = ? LIMIT 1`
+      )
+      .get(me);
+
+    if (peer.fcm_token) {
+      void sendDoctorMessagePush({
+        token: peer.fcm_token,
+        senderName: senderRow?.full_name?.trim() || senderRow?.username || 'Коллега',
+        body: text.slice(0, 180),
+        assignmentId: 0,
+        messageId: Number(info.lastInsertRowid),
+      });
+    }
+
+    res.status(201).json({
+      ok: true,
+      message: {
+        id: Number(info.lastInsertRowid),
+        senderUserId: me,
+        recipientUserId: other,
+        text,
+        createdAt: ts,
+        senderIsMe: true,
+      },
+    });
   });
 
   app.get('/api/users/me', requireAuth, (req, res) => {
