@@ -14,17 +14,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -42,9 +36,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.medtest1.network.BackendApi
 import com.example.medtest1.network.DoctorAssignment
+import com.example.medtest1.network.DoctorPeerUnreadItem
+import com.example.medtest1.network.DoctorPeerUnreadSummary
 import com.example.medtest1.network.DoctorPrescription
 import com.example.medtest1.network.DoctorProfile
 import com.example.medtest1.network.DoctorShiftInfo
+import kotlinx.coroutines.delay
 import com.example.medtest1.network.TreatmentReportSummary
 import com.example.medtest1.reports.assignmentsToShiftLines
 import com.example.medtest1.reports.exportDoctorShiftToPdf
@@ -112,6 +109,8 @@ fun DoctorPanelScreen(
     var completedAssignments by remember { mutableStateOf<List<DoctorAssignment>>(emptyList()) }
     var colleagues by remember { mutableStateOf<List<DoctorProfile>>(emptyList()) }
     var rejections by remember { mutableStateOf<List<DoctorAssignment>>(emptyList()) }
+    var peerUnread by remember { mutableStateOf(DoctorPeerUnreadSummary(0, emptyList())) }
+    var peerUnreadMap by remember { mutableStateOf<Map<Long, DoctorPeerUnreadItem>>(emptyMap()) }
     var listTab by remember { mutableIntStateOf(0) }
     var selected by remember { mutableStateOf<DoctorAssignment?>(null) }
     var prescriptions by remember { mutableStateOf<List<DoctorPrescription>>(emptyList()) }
@@ -153,28 +152,34 @@ fun DoctorPanelScreen(
 
     fun refresh() {
         scope.launch {
-            val (_, duty) = BackendApi.getMyShift(tokenProvider())
-            onDuty = duty
-            currentShift = BackendApi.getMyShiftDetail(tokenProvider())
-            shiftLoading = false
-            assignments = BackendApi.getDoctorAssignments(tokenProvider())
-            completedAssignments = BackendApi.getDoctorCompletedAssignments(tokenProvider())
-            colleagues = BackendApi.listOnDutyDoctors(tokenProvider())
-                .filter { it.username != doctorDisplayName }
-            rejections = BackendApi.getDoctorRejections(tokenProvider())
-            assignments.forEach { a ->
-                val detail = BackendApi.getAssignmentDetail(tokenProvider(), a.id)
-                assignmentMilestones[a.id] = computeDoctorViewMilestones(
-                    prescriptions = detail.prescriptions,
-                    reports = detail.reports,
-                    careEvents = detail.careEvents
-                )
-                val latest = latestDoneMilestoneIndex(assignmentMilestones[a.id].orEmpty())
-                val seen = patientMilestoneSeenProvider(a.id)
-                if (latest > seen) {
-                    onPatientMilestoneSeen(a.id, latest)
+            runCatching {
+                val (_, duty) = BackendApi.getMyShift(tokenProvider())
+                onDuty = duty
+                currentShift = BackendApi.getMyShiftDetail(tokenProvider())
+                assignments = BackendApi.getDoctorAssignments(tokenProvider())
+                completedAssignments = BackendApi.getDoctorCompletedAssignments(tokenProvider())
+                colleagues = BackendApi.listOnDutyDoctors(tokenProvider())
+                    .filter { it.username != doctorDisplayName }
+                rejections = BackendApi.getDoctorRejections(tokenProvider())
+                peerUnread = BackendApi.getDoctorPeerUnreadSummary(tokenProvider())
+                peerUnreadMap = peerUnread.items.associateBy { it.peerUserId }
+                assignments.forEach { a ->
+                    val detail = BackendApi.getAssignmentDetail(tokenProvider(), a.id)
+                    assignmentMilestones[a.id] = computeDoctorViewMilestones(
+                        prescriptions = detail.prescriptions,
+                        reports = detail.reports,
+                        careEvents = detail.careEvents
+                    )
+                    val latest = latestDoneMilestoneIndex(assignmentMilestones[a.id].orEmpty())
+                    val seen = patientMilestoneSeenProvider(a.id)
+                    if (latest > seen) {
+                        onPatientMilestoneSeen(a.id, latest)
+                    }
                 }
+            }.onFailure {
+                status = "Не удалось обновить данные. Проверьте интернет."
             }
+            shiftLoading = false
         }
     }
 
@@ -197,6 +202,17 @@ fun DoctorPanelScreen(
     }
 
     LaunchedEffect(Unit) { refresh() }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(4000)
+            runCatching {
+                val summary = BackendApi.getDoctorPeerUnreadSummary(tokenProvider())
+                peerUnread = summary
+                peerUnreadMap = summary.items.associateBy { it.peerUserId }
+            }
+        }
+    }
 
     val shiftColor by animateColorAsState(
         targetValue = if (onDuty) app.accentRing else app.onHeroMuted,
@@ -364,91 +380,58 @@ fun DoctorPanelScreen(
             visible = true,
             enter = fadeIn(tween(380)) + slideInVertically(tween(380)) { it / 8 }
         ) {
-            MedSurfaceCard {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text("Смена", fontWeight = FontWeight.Bold, color = shiftColor)
-                        Text(
-                            if (onDuty) "Вы на смене" else "Смена закрыта",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                    if (shiftLoading) {
-                        CircularProgressIndicator()
-                    } else {
-                        Button(
-                            onClick = {
-                                scope.launch {
-                                    shiftLoading = true
-                                    if (onDuty) {
-                                        val shift = currentShift
-                                        BackendApi.endShift(tokenProvider())
-                                        if (shift != null) {
-                                            pendingShiftExport = shift.copy(
-                                                endedAt = System.currentTimeMillis(),
-                                                isActive = false
-                                            )
-                                            shiftPdfLauncher.launch(
-                                                "shift_report_${SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date())}.pdf"
-                                            )
-                                        }
-                                    } else {
-                                        BackendApi.startShift(tokenProvider())
-                                    }
-                                    refresh()
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (onDuty) MaterialTheme.colorScheme.tertiaryContainer
-                                else MaterialTheme.colorScheme.primary,
-                                contentColor = if (onDuty) MaterialTheme.colorScheme.onTertiaryContainer
-                                else MaterialTheme.colorScheme.onPrimary
-                            )
-                        ) {
-                            Text(if (onDuty) "Закончить смену" else "Начать смену")
-                        }
-                    }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    OutlinedButton(onClick = onEditProfile, modifier = Modifier.weight(1f)) {
-                        Text("Анкета")
-                    }
-                    if (currentShift != null) {
-                        OutlinedButton(
-                            onClick = {
-                                val shift = currentShift ?: return@OutlinedButton
+            DoctorShiftHeroCard(
+                onDuty = onDuty,
+                shiftLoading = shiftLoading,
+                shiftColor = shiftColor,
+                onToggleShift = {
+                    scope.launch {
+                        shiftLoading = true
+                        if (onDuty) {
+                            val shift = currentShift
+                            BackendApi.endShift(tokenProvider())
+                            if (shift != null) {
                                 pendingShiftExport = shift.copy(
                                     endedAt = System.currentTimeMillis(),
-                                    isActive = onDuty
+                                    isActive = false
                                 )
                                 shiftPdfLauncher.launch(
                                     "shift_report_${SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date())}.pdf"
                                 )
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("PDF смены")
+                            }
+                        } else {
+                            BackendApi.startShift(tokenProvider())
                         }
+                        refresh()
+                    }
+                },
+                onEditProfile = onEditProfile,
+                onExportPdf = currentShift?.let { shift ->
+                    {
+                        pendingShiftExport = shift.copy(
+                            endedAt = System.currentTimeMillis(),
+                            isActive = onDuty
+                        )
+                        shiftPdfLauncher.launch(
+                            "shift_report_${SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date())}.pdf"
+                        )
                     }
                 }
-            }
+            )
         }
 
-        TabRow(selectedTabIndex = listTab) {
-            Tab(selected = listTab == 0, onClick = { listTab = 0 }, text = { Text("Пациенты (${assignments.size})") })
-            Tab(selected = listTab == 1, onClick = { listTab = 1 }, text = { Text("Завершённые (${completedAssignments.size})") })
-            Tab(selected = listTab == 2, onClick = { listTab = 2 }, text = { Text("Коллеги (${colleagues.size})") })
-            Tab(selected = listTab == 3, onClick = { listTab = 3 }, text = { Text("Отказы (${rejections.size})") })
-        }
+        DoctorPanelSectionGrid(
+            selectedTab = listTab,
+            patientsCount = assignments.size,
+            completedCount = completedAssignments.size,
+            colleaguesCount = colleagues.size,
+            rejectionsCount = rejections.size,
+            peerUnreadTotal = peerUnread.totalUnread,
+            onSelectTab = { listTab = it }
+        )
 
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState()),
+            modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             when (listTab) {
@@ -490,37 +473,36 @@ fun DoctorPanelScreen(
                     }
                 }
                 2 -> {
-                    MedSectionLabel("Врачи на смене")
-                    if (!onDuty) {
-                        Text("Начните смену, чтобы общаться с коллегами.", modifier = Modifier.padding(8.dp))
-                    } else if (colleagues.isEmpty()) {
+                    MedSectionLabel("Чат с коллегами")
+                    if (peerUnread.totalUnread > 0) {
+                        Text(
+                            "Непрочитанных сообщений: ${peerUnread.totalUnread}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                    val peerCards = buildColleagueChatList(colleagues, peerUnread)
+                    if (!onDuty && peerCards.isEmpty()) {
+                        Text("Начните смену, чтобы видеть коллег на смене.", modifier = Modifier.padding(8.dp))
+                    } else if (peerCards.isEmpty()) {
                         Text("Сейчас на смене только вы.", modifier = Modifier.padding(8.dp))
                     } else {
-                        Text(
-                            "Нажмите на коллегу, чтобы открыть чат.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = app.onHeroMuted,
-                            modifier = Modifier.padding(horizontal = 8.dp)
-                        )
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            colleagues.forEach { doc ->
-                                DoctorSelectionCard(
-                                    doctor = doc,
-                                    index = 0,
-                                    onClick = {
-                                        onOpenPeerChat(
-                                            doc.userId,
-                                            doc.fullName.ifBlank { doc.username },
-                                            doc.specialty
-                                        )
-                                    }
-                                )
-                            }
+                        peerCards.forEach { (doc, unread) ->
+                            ColleagueChatCard(
+                                doctor = doc,
+                                unreadCount = unread?.unreadCount ?: 0,
+                                lastPreview = unread?.lastMessagePreview,
+                                onOpenChat = {
+                                    onOpenPeerChat(
+                                        doc.userId,
+                                        doc.fullName.ifBlank { doc.username },
+                                        doc.specialty
+                                    )
+                                },
+                                modifier = Modifier.padding(vertical = 4.dp)
+                            )
                         }
                     }
                 }
@@ -595,6 +577,36 @@ private fun PatientListCard(
             )
         }
     }
+}
+
+private fun buildColleagueChatList(
+    onDutyColleagues: List<DoctorProfile>,
+    peerUnread: DoctorPeerUnreadSummary
+): List<Pair<DoctorProfile, DoctorPeerUnreadItem?>> {
+    val seen = mutableSetOf<Long>()
+    val result = mutableListOf<Pair<DoctorProfile, DoctorPeerUnreadItem?>>()
+    onDutyColleagues.forEach { doc ->
+        seen.add(doc.userId)
+        result.add(doc to peerUnread.items.firstOrNull { it.peerUserId == doc.userId })
+    }
+    peerUnread.items.forEach { item ->
+        if (item.peerUserId !in seen) {
+            seen.add(item.peerUserId)
+            result.add(
+                DoctorProfile(
+                    userId = item.peerUserId,
+                    username = item.peerUsername,
+                    specialty = item.peerSpecialty,
+                    fullName = item.peerFullName,
+                    experienceYears = 0,
+                    education = "",
+                    bio = "",
+                    onDuty = false
+                ) to item
+            )
+        }
+    }
+    return result
 }
 
 private fun formatTs(ts: Long): String =

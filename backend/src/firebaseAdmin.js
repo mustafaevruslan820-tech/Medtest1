@@ -79,6 +79,31 @@ export async function sendDoctorAssignmentPush({ token, patientName, assignmentI
   }
 }
 
+export async function sendDoctorPeerMessagePush({ token, senderName, body, senderDoctorId, messageId }) {
+  if (!admin.apps.length || !token) return false;
+  try {
+    const preview = (body || 'Новое сообщение').slice(0, 120);
+    await admin.messaging().send({
+      token,
+      notification: {
+        title: senderName ? `Коллега: ${senderName}` : 'Сообщение от коллеги',
+        body: preview,
+      },
+      data: {
+        type: 'doctor_peer_message',
+        senderDoctorId: String(senderDoctorId),
+        messageId: messageId != null ? String(messageId) : '',
+        body: preview,
+      },
+      android: { priority: 'high', notification: { channelId: 'doctor_events' } },
+    });
+    return true;
+  } catch (e) {
+    console.warn('[firebase-admin] doctor peer message push failed:', e?.message ?? e);
+    return false;
+  }
+}
+
 export async function sendDoctorMessagePush({ token, senderName, body, assignmentId, messageId }) {
   if (!admin.apps.length || !token) return false;
   try {

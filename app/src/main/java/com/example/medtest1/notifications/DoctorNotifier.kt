@@ -28,6 +28,41 @@ object DoctorNotifier {
         )
     }
 
+    fun showPeer(
+        context: Context,
+        senderName: String,
+        body: String,
+        peerDoctorId: Long,
+        peerSpecialty: String = ""
+    ) {
+        ensureChannel(context)
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(MainActivity.EXTRA_OPEN_PEER_CHAT, true)
+            putExtra(MainActivity.EXTRA_PEER_DOCTOR_ID, peerDoctorId)
+            putExtra(MainActivity.EXTRA_PEER_DOCTOR_NAME, senderName)
+            putExtra(MainActivity.EXTRA_PEER_DOCTOR_SPECIALTY, peerSpecialty)
+            putExtra(MainActivity.EXTRA_OPEN_DOCTOR_PANEL, true)
+        }
+        val pending = PendingIntent.getActivity(
+            context,
+            (peerDoctorId % Int.MAX_VALUE).toInt() + 50_000,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle("Коллега: $senderName")
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setContentIntent(pending)
+            .build()
+        val mgr = context.getSystemService(NotificationManager::class.java) ?: return
+        mgr.notify((peerDoctorId % Int.MAX_VALUE).toInt() + 50_000, notification)
+    }
+
     fun show(
         context: Context,
         title: String,

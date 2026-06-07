@@ -33,7 +33,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -192,7 +191,7 @@ fun DoctorAvatar(doctor: DoctorProfile, size: androidx.compose.ui.unit.Dp) {
             val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             if (bmp != null) {
                 Image(
-                    bitmap = bmp.asImageBitmap(),
+                    bitmap = bmp.toComposeImageBitmap(),
                     contentDescription = null,
                     modifier = Modifier
                         .size(size)

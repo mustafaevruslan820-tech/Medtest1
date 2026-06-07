@@ -298,6 +298,10 @@ class MainActivity : ComponentActivity() {
         val openDoctorPanel = intent?.getBooleanExtra(EXTRA_OPEN_DOCTOR_PANEL, false) == true
         val openDoctorChat = intent?.getBooleanExtra(EXTRA_OPEN_DOCTOR_CHAT, false) == true
         val openAssignmentId = intent?.getLongExtra(EXTRA_ASSIGNMENT_ID, 0L) ?: 0L
+        val openPeerChat = intent?.getBooleanExtra(EXTRA_OPEN_PEER_CHAT, false) == true
+        val peerDoctorId = intent?.getLongExtra(EXTRA_PEER_DOCTOR_ID, 0L) ?: 0L
+        val peerDoctorName = intent?.getStringExtra(EXTRA_PEER_DOCTOR_NAME).orEmpty()
+        val peerDoctorSpecialty = intent?.getStringExtra(EXTRA_PEER_DOCTOR_SPECIALTY).orEmpty()
         enableEdgeToEdge()
         setContent {
             val context = LocalContext.current
@@ -316,6 +320,10 @@ class MainActivity : ComponentActivity() {
                     initialOpenDoctorPanel = openDoctorPanel,
                     initialOpenDoctorChat = openDoctorChat,
                     initialAssignmentId = openAssignmentId,
+                    initialOpenPeerChat = openPeerChat,
+                    initialPeerDoctorId = peerDoctorId,
+                    initialPeerDoctorName = peerDoctorName,
+                    initialPeerDoctorSpecialty = peerDoctorSpecialty,
                     onDarkThemeChange = { d ->
                         darkTheme = d
                         themePrefs.edit { putBoolean("pref_dark_theme", d) }
@@ -331,6 +339,10 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_OPEN_DOCTOR_PANEL = "extra_open_doctor_panel"
         const val EXTRA_OPEN_DOCTOR_CHAT = "extra_open_doctor_chat"
         const val EXTRA_ASSIGNMENT_ID = "extra_assignment_id"
+        const val EXTRA_OPEN_PEER_CHAT = "extra_open_peer_chat"
+        const val EXTRA_PEER_DOCTOR_ID = "extra_peer_doctor_id"
+        const val EXTRA_PEER_DOCTOR_NAME = "extra_peer_doctor_name"
+        const val EXTRA_PEER_DOCTOR_SPECIALTY = "extra_peer_doctor_specialty"
     }
 }
 
@@ -644,6 +656,10 @@ private fun MedApp(
     initialOpenDoctorPanel: Boolean = false,
     initialOpenDoctorChat: Boolean = false,
     initialAssignmentId: Long = 0L,
+    initialOpenPeerChat: Boolean = false,
+    initialPeerDoctorId: Long = 0L,
+    initialPeerDoctorName: String = "",
+    initialPeerDoctorSpecialty: String = "",
     onDarkThemeChange: (Boolean) -> Unit
 ) {
     var currentScreen by remember { mutableStateOf(Screen.Onboarding) }
@@ -665,6 +681,10 @@ private fun MedApp(
     var pendingOpenDoctorPanel by remember { mutableStateOf(initialOpenDoctorPanel) }
     var pendingOpenDoctorChat by remember { mutableStateOf(initialOpenDoctorChat) }
     var pendingAssignmentId by remember { mutableStateOf(initialAssignmentId) }
+    var pendingOpenPeerChat by remember { mutableStateOf(initialOpenPeerChat) }
+    var pendingPeerDoctorId by remember { mutableStateOf(initialPeerDoctorId) }
+    var pendingPeerDoctorName by remember { mutableStateOf(initialPeerDoctorName) }
+    var pendingPeerDoctorSpecialty by remember { mutableStateOf(initialPeerDoctorSpecialty) }
     var userRole by remember { mutableStateOf("patient") }
     var patientAssignment by remember { mutableStateOf<DoctorAssignment?>(null) }
     var doctorChatAssignmentId by remember { mutableStateOf(0L) }
@@ -928,6 +948,19 @@ private fun MedApp(
         }
     }
 
+    LaunchedEffect(activeUser, pendingOpenPeerChat, pendingPeerDoctorId) {
+        if (activeUser.isNotBlank() && pendingOpenPeerChat && pendingPeerDoctorId > 0L) {
+            peerChatDoctorId = pendingPeerDoctorId
+            peerChatTitle = pendingPeerDoctorName.ifBlank { "Коллега" }
+            peerChatSpecialty = pendingPeerDoctorSpecialty
+            currentScreen = Screen.DoctorPeerChat
+            pendingOpenPeerChat = false
+            pendingPeerDoctorId = 0L
+            pendingPeerDoctorName = ""
+            pendingPeerDoctorSpecialty = ""
+        }
+    }
+
     LaunchedEffect(activeUser) {
         if (activeUser.isBlank()) return@LaunchedEffect
         registerSupportFcmToken(sessionPrefs)
@@ -1003,7 +1036,30 @@ private fun MedApp(
                     }
                     "doctor" -> {
                         val inChat = currentScreen == Screen.DoctorPatientChat && DoctorSession.isInDoctorChat
+                        val inPeerChat = currentScreen == Screen.DoctorPeerChat && DoctorSession.isInPeerChat
                         val inPanel = currentScreen == Screen.DoctorPanel
+                        val peerUnread = runCatching {
+                            BackendApi.getDoctorPeerUnreadSummary(token)
+                        }.getOrDefault(
+                            com.example.medtest1.network.DoctorPeerUnreadSummary(0, emptyList())
+                        )
+                        peerUnread.items.forEach { item ->
+                            val lastNotified = sessionPrefs.getLong("peer_last_msg_${item.peerUserId}", 0L)
+                            val skip = inPeerChat && DoctorSession.activePeerDoctorId == item.peerUserId
+                            if (!skip && item.lastMessageId > lastNotified) {
+                                val name = item.peerFullName.ifBlank { item.peerUsername }.ifBlank { "Коллега" }
+                                DoctorNotifier.showPeer(
+                                    context,
+                                    name,
+                                    item.lastMessagePreview.ifBlank { "Новое сообщение" },
+                                    item.peerUserId,
+                                    item.peerSpecialty
+                                )
+                                sessionPrefs.edit {
+                                    putLong("peer_last_msg_${item.peerUserId}", item.lastMessageId)
+                                }
+                            }
+                        }
                         val assignments = runCatching {
                             BackendApi.getDoctorAssignments(token)
                         }.getOrDefault(emptyList())
@@ -1195,7 +1251,13 @@ private fun MedApp(
             Screen.SupportAdmin -> currentScreen = Screen.Settings
             Screen.AdminPanel -> currentScreen = Screen.Home
             Screen.DoctorPanel -> activity?.finish()
-            Screen.DoctorProfileForm -> currentScreen = Screen.DoctorPanel
+            Screen.DoctorProfileForm -> {
+                currentScreen = if (sessionPrefs.getBoolean("doctor_profile_complete", false)) {
+                    Screen.DoctorPanel
+                } else {
+                    Screen.Login
+                }
+            }
             Screen.DoctorPeerChat -> currentScreen = Screen.DoctorPanel
             Screen.DoctorPatientChat -> {
                 currentScreen = if (doctorChatAsDoctor) Screen.DoctorPanel else Screen.Treatment

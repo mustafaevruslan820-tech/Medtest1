@@ -75,6 +75,22 @@ data class DoctorPeerMessage(
     val senderIsMe: Boolean
 )
 
+data class DoctorPeerUnreadItem(
+    val peerUserId: Long,
+    val peerUsername: String,
+    val peerFullName: String,
+    val peerSpecialty: String,
+    val unreadCount: Int,
+    val lastMessageId: Long,
+    val lastMessagePreview: String,
+    val lastAt: Long
+)
+
+data class DoctorPeerUnreadSummary(
+    val totalUnread: Int,
+    val items: List<DoctorPeerUnreadItem>
+)
+
 data class DoctorPrescription(
     val id: Long,
     val prescriptionText: String,
@@ -909,6 +925,53 @@ object BackendApi {
             }
         }
     }
+
+    suspend fun getDoctorPeerUnreadSummary(token: String): DoctorPeerUnreadSummary =
+        withContext(Dispatchers.IO) {
+            val (code, text) = rawGet(
+                "$baseUrl/api/doctors/peer/unread",
+                bearerToken = token,
+                adminKey = null
+            )
+            if (code !in 200..299 || text.isNullOrBlank()) {
+                return@withContext DoctorPeerUnreadSummary(0, emptyList())
+            }
+            val json = runCatching { JSONObject(text) }.getOrNull()
+                ?: return@withContext DoctorPeerUnreadSummary(0, emptyList())
+            val arr = json.optJSONArray("items") ?: return@withContext DoctorPeerUnreadSummary(
+                json.optInt("totalUnread", 0),
+                emptyList()
+            )
+            val items = buildList {
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    add(
+                        DoctorPeerUnreadItem(
+                            peerUserId = o.optLong("peerUserId"),
+                            peerUsername = o.optString("peerUsername"),
+                            peerFullName = o.optString("peerFullName"),
+                            peerSpecialty = o.optString("peerSpecialty"),
+                            unreadCount = o.optInt("unreadCount"),
+                            lastMessageId = o.optLong("lastMessageId"),
+                            lastMessagePreview = o.optString("lastMessagePreview"),
+                            lastAt = o.optLong("lastAt")
+                        )
+                    )
+                }
+            }
+            DoctorPeerUnreadSummary(json.optInt("totalUnread", items.sumOf { it.unreadCount }), items)
+        }
+
+    suspend fun markDoctorPeerMessagesRead(token: String, otherDoctorId: Long): Boolean =
+        withContext(Dispatchers.IO) {
+            val (code, _) = rawPost(
+                "$baseUrl/api/doctors/peer/$otherDoctorId/read",
+                JSONObject(),
+                token,
+                null
+            )
+            code in 200..299
+        }
 
     suspend fun getDoctorPeerMessages(token: String, otherDoctorId: Long): List<DoctorPeerMessage> =
         withContext(Dispatchers.IO) {

@@ -26,6 +26,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -67,11 +68,22 @@ fun DoctorPeerChatScreen(
     val listState = rememberLazyListState()
     val specialtyLabel = formatDoctorSpecialtyLabel(peerSpecialty)
 
+    DisposableEffect(peerDoctorId) {
+        DoctorSession.isInPeerChat = true
+        DoctorSession.activePeerDoctorId = peerDoctorId
+        onDispose {
+            DoctorSession.isInPeerChat = false
+            DoctorSession.activePeerDoctorId = 0L
+        }
+    }
+
     LaunchedEffect(peerDoctorId) {
+        BackendApi.markDoctorPeerMessagesRead(tokenProvider(), peerDoctorId)
         while (true) {
             messages = BackendApi.getDoctorPeerMessages(tokenProvider(), peerDoctorId)
             if (messages.isNotEmpty()) {
                 listState.animateScrollToItem(messages.lastIndex)
+                BackendApi.markDoctorPeerMessagesRead(tokenProvider(), peerDoctorId)
             }
             delay(2000)
         }

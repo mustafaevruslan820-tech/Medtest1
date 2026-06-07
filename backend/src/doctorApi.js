@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import {
   sendDoctorAssignmentPush,
   sendDoctorMessagePush,
+  sendDoctorPeerMessagePush,
   sendDoctorReportPush,
   sendPatientPrescriptionPush,
   sendPatientReportConclusionPush,
@@ -964,6 +965,90 @@ export function registerDoctorRoutes(app, {
     res.json({ ok: true, status, conclusion: conclusionText, signedAt: ts });
   });
 
+  app.get('/api/doctors/peer/unread', requireAuth, requireRole('doctor'), (req, res) => {
+    const me = Number(req.user.sub);
+    const peers = db
+      .prepare(
+        `SELECT m.sender_user_id AS peer_user_id,
+                COUNT(*) AS unread_count,
+                MAX(m.id) AS last_message_id,
+                MAX(m.created_at) AS last_at
+         FROM doctor_peer_messages m
+         LEFT JOIN doctor_peer_read_state r
+           ON r.reader_user_id = ? AND r.peer_user_id = m.sender_user_id
+         WHERE m.recipient_user_id = ?
+           AND m.id > COALESCE(r.last_read_message_id, 0)
+         GROUP BY m.sender_user_id`
+      )
+      .all(me, me);
+
+    const items = peers.map((p) => {
+      const peerId = Number(p.peer_user_id);
+      const profile = db
+        .prepare(
+          `SELECT u.username, p.full_name, p.specialty
+           FROM users u
+           LEFT JOIN doctor_profiles p ON p.user_id = u.id
+           WHERE u.id = ? LIMIT 1`
+        )
+        .get(peerId);
+      const lastMsg = db
+        .prepare(
+          `SELECT text FROM doctor_peer_messages WHERE id = ? LIMIT 1`
+        )
+        .get(Number(p.last_message_id));
+      return {
+        peerUserId: peerId,
+        peerUsername: profile?.username ?? '',
+        peerFullName: profile?.full_name ?? '',
+        peerSpecialty: profile?.specialty ?? '',
+        unreadCount: Number(p.unread_count),
+        lastMessageId: Number(p.last_message_id),
+        lastMessagePreview: lastMsg?.text ? String(lastMsg.text).slice(0, 120) : '',
+        lastAt: Number(p.last_at),
+      };
+    });
+    const totalUnread = items.reduce((sum, i) => sum + i.unreadCount, 0);
+    res.json({ ok: true, totalUnread, items });
+  });
+
+  app.post('/api/doctors/peer/:otherDoctorId/read', requireAuth, requireRole('doctor'), (req, res) => {
+    const me = Number(req.user.sub);
+    const other = Number(req.params.otherDoctorId);
+    if (!other || other === me) {
+      return res.status(400).json({ ok: false, error: 'invalid_peer' });
+    }
+    const last = db
+      .prepare(
+        `SELECT MAX(id) AS max_id FROM doctor_peer_messages
+         WHERE (sender_user_id = ? AND recipient_user_id = ?)
+            OR (sender_user_id = ? AND recipient_user_id = ?)`
+      )
+      .get(other, me, me, other);
+    const maxId = last?.max_id != null ? Number(last.max_id) : 0;
+    const ts = nowMs();
+    const existing = db
+      .prepare(
+        `SELECT last_read_message_id FROM doctor_peer_read_state
+         WHERE reader_user_id = ? AND peer_user_id = ? LIMIT 1`
+      )
+      .get(me, other);
+    const readUpTo = Math.max(existing ? Number(existing.last_read_message_id) : 0, maxId);
+    if (existing) {
+      db.prepare(
+        `UPDATE doctor_peer_read_state
+         SET last_read_message_id = ?, updated_at = ?
+         WHERE reader_user_id = ? AND peer_user_id = ?`
+      ).run(readUpTo, ts, me, other);
+    } else {
+      db.prepare(
+        `INSERT INTO doctor_peer_read_state (reader_user_id, peer_user_id, last_read_message_id, updated_at)
+         VALUES (?, ?, ?, ?)`
+      ).run(me, other, readUpTo, ts);
+    }
+    res.json({ ok: true, lastReadMessageId: maxId });
+  });
+
   app.get('/api/doctors/peer/:otherDoctorId/messages', requireAuth, requireRole('doctor'), (req, res) => {
     const me = Number(req.user.sub);
     const other = Number(req.params.otherDoctorId);
@@ -1031,11 +1116,11 @@ export function registerDoctorRoutes(app, {
       .get(me);
 
     if (peer.fcm_token) {
-      void sendDoctorMessagePush({
+      void sendDoctorPeerMessagePush({
         token: peer.fcm_token,
         senderName: senderRow?.full_name?.trim() || senderRow?.username || 'Коллега',
         body: text.slice(0, 180),
-        assignmentId: 0,
+        senderDoctorId: me,
         messageId: Number(info.lastInsertRowid),
       });
     }

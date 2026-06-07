@@ -33,7 +33,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -134,7 +133,7 @@ fun DoctorProfileFormScreen(
                 ) {
                     if (photoPreview != null) {
                         Image(
-                            bitmap = photoPreview!!.asImageBitmap(),
+                            bitmap = photoPreview!!.toComposeImageBitmap(),
                             contentDescription = "Фото врача",
                             modifier = Modifier
                                 .size(120.dp)
@@ -179,30 +178,40 @@ fun DoctorProfileFormScreen(
                 )
                 Button(
                     onClick = {
+                        if (specialty.isBlank() || fullName.isBlank() || photoBase64.isNullOrBlank()) {
+                            error = "Заполните специальность, ФИО и добавьте фото."
+                            return@Button
+                        }
                         saving = true
+                        error = null
                         scope.launch {
-                            val saved = BackendApi.updateMyDoctorProfile(
-                                token = tokenProvider(),
-                                specialty = specialty.trim(),
-                                fullName = fullName.trim(),
-                                experienceYears = experience.toIntOrNull() ?: 0,
-                                education = education.trim(),
-                                bio = bio.trim(),
-                                photoBase64 = photoBase64
-                            )
+                            val saved = runCatching {
+                                BackendApi.updateMyDoctorProfile(
+                                    token = tokenProvider(),
+                                    specialty = specialty.trim(),
+                                    fullName = fullName.trim(),
+                                    experienceYears = experience.toIntOrNull() ?: 0,
+                                    education = education.trim(),
+                                    bio = bio.trim(),
+                                    photoBase64 = photoBase64
+                                )
+                            }.getOrNull()
                             saving = false
-                            if (saved != null && saved.isProfileReady()) {
-                                onProfileSaved()
-                            } else {
-                                error = "Заполните специальность, ФИО и добавьте фото."
+                            when {
+                                saved != null && saved.isProfileReady() -> onProfileSaved()
+                                saved != null -> error = "Профиль сохранён не полностью. Добавьте фото."
+                                else -> error = "Не удалось сохранить. Проверьте интернет и войдите снова."
                             }
                         }
                     },
                     enabled = !saving,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    if (saving) CircularProgressIndicator(modifier = Modifier.size(20.dp))
-                    else Text("Сохранить анкету")
+                    if (saving) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                    } else {
+                        Text("Сохранить анкету")
+                    }
                 }
                 error?.let {
                     Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)

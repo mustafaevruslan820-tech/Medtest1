@@ -219,5 +219,15 @@ function migrate(db) {
 
     CREATE INDEX IF NOT EXISTS idx_doctor_peer_messages_pair
       ON doctor_peer_messages(sender_user_id, recipient_user_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS doctor_peer_read_state (
+      reader_user_id INTEGER NOT NULL,
+      peer_user_id INTEGER NOT NULL,
+      last_read_message_id INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (reader_user_id, peer_user_id),
+      FOREIGN KEY(reader_user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY(peer_user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
   `);
 }

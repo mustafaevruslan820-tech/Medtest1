@@ -12,6 +12,13 @@ class MedtestFirebaseMessagingService : FirebaseMessagingService() {
         val title = message.notification?.title.orEmpty()
 
         when (type) {
+            "doctor_peer_message" -> {
+                if (DoctorSession.isInPeerChat) return
+                val peerId = message.data["senderDoctorId"]?.toLongOrNull() ?: 0L
+                val senderName = title.removePrefix("Коллега: ").ifBlank { "Коллега" }
+                val body = message.notification?.body ?: message.data["body"] ?: "Новое сообщение"
+                DoctorNotifier.showPeer(applicationContext, senderName, body, peerId)
+            }
             "doctor_assignment",
             "doctor_message",
             "doctor_prescription",
